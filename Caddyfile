@@ -1,0 +1,19 @@
+# Replace {your_domain} with your actual domain
+{your_domain} {
+    encode zstd gzip
+    tls {your_email@example.com}
+    
+    # Webhook endpoint
+    @webhook path /webhook/*
+    handle @webhook {
+        reverse_proxy bot:8080
+    }
+    
+    # Health check endpoint
+    handle_path /healthz* {
+        reverse_proxy bot:8080
+    }
+    
+    # Default response
+    respond "OK" 200
+}
