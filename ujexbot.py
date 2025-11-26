@@ -1,32 +1,28 @@
-import logging
-logging.basicConfig(level=logging.INFO)
-# ─────────────────────────────────────────────────────────────────────────────
-# Telegram Moderator Bot — MVP v1
-# Stack: Python 3.11+, aiogram 3.x, PostgreSQL (SQLAlchemy), Redis (aioredis)
-# Features in this MVP:
-#  - Join gate ("captcha via subscription"): require user to be subscribed to a channel before writing
-#  - Content filters: profanity, links, @username mentions (configurable)
-#  - Warn system with thresholds → auto-mute/ban; adjustable limits and mute durations
-#  - Media permissions toggles (photo/video/voice/gif/stickers)
-#  - Logging to database (deleted msgs, warns, bans) - viewable with !logs command
-#  - Commands: !help, !rules, !me, !report, !warn, !kick, !ban, !unban, !mute, !unmute, !logs
-#              !setwarns, !setmutetime, /settings, /setcaptcha
-#  - Per-chat settings persisted in Postgres
-#  - Admin vs members privileges
-# Notes:
-#  - For subscription check, bot must be admin in the target channel (or at least be able to read members).
-#  - Replace placeholders (PROFANITY, TOKEN, DB) with your actual data.
-# ─────────────────────────────────────────────────────────────────────────────
+#!/usr/bin/env python3
+"""
+Telegram Moderator Bot
 
-# Project layout (single file for canvas; split into modules in real repo):
-#  - config: Env settings
-#  - db: SQLAlchemy models + session
-#  - utils: helpers for checks, formatting
-#  - filters: content filters + rate limiting (slowmode)
-#  - handlers: commands + message handlers
-#  - services: logging, punishments, subscription gate
+Features:
+- Subscription gate (captcha via channel subscription)
+- Content filters (profanity, links, mentions)
+- Warning system with auto-mute/ban
+- Media permissions control
+- Comprehensive logging
+- Admin commands for moderation
+"""
+
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+logging.info("🔧 Loading environment variables...")
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 import re
@@ -48,25 +44,30 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Config
-# ─────────────────────────────────────────────────────────────────────────────
-TOKEN = (os.getenv("BOT_TOKEN") or "8430358415:AAF-j2MpV1rhTaU7JuxYGmB6btuUVx5tpgM")
+# =============================================================================
+# Configuration
+# =============================================================================
 
-# ⚠️ Set your token above or export BOT_TOKEN in your shell before running.
+
+TOKEN = os.getenv("BOT_TOKEN")
+if not TOKEN:
+    raise SystemExit("❌ BOT_TOKEN environment variable is required")
+
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///bot.db")
-PROFANITY = {"сука", "блять", "нахуй", "хуй", "пизда", "ебать"}  # пример, расширьте словарь
+
+# Content filters
+PROFANITY = {"сука", "блять", "нахуй", "хуй", "пизда", "ебать"}
 LINK_RE = re.compile(r"https?://|t\.me/|\bwww\.", re.IGNORECASE)
 AT_USERNAME_RE = re.compile(r"@[A-Za-z0-9_]{5,}\b")
 
-if not TOKEN:
-    raise SystemExit("Please set BOT_TOKEN env var")
+logging.info("✅ Configuration loaded")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Database (SQLAlchemy)
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# Database Models
+# =============================================================================
+
 Base = declarative_base()
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, echo=False)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 class Chat(Base):
@@ -109,33 +110,34 @@ class ModLog(Base):
     meta = Column(JSON, default={})
     created_at = Column(DateTime, default=datetime.utcnow)
 
+# Create tables
 Base.metadata.create_all(engine)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Database migration: Add username column if not exists
-# ─────────────────────────────────────────────────────────────────────────────
+
 def migrate_database():
-    """Add username column to user_state table if it doesn't exist"""
+    """Run database migrations"""
     try:
-        from sqlalchemy import inspect, text
+        from sqlalchemy import inspect
         insp = inspect(engine)
         cols = [c['name'] for c in insp.get_columns('user_state')]
+        
         if 'username' not in cols:
-            logging.info("Adding 'username' column to user_state table...")
-            try:
-                with engine.begin() as con:
-                    con.execute(text("ALTER TABLE user_state ADD COLUMN username VARCHAR"))
-                logging.info("Successfully added 'username' column")
-            except Exception as e:
-                logging.error(f"Error adding username column: {e}")
+            logging.info("📦 Running migration: adding username column...")
+            with engine.begin() as con:
+                con.execute(text("ALTER TABLE user_state ADD COLUMN username VARCHAR"))
+            logging.info("✅ Migration completed")
     except Exception as e:
-        logging.error(f"Error in database migration: {e}")
+        logging.error(f"❌ Migration error: {e}")
+
 
 migrate_database()
+logging.info("✅ Database initialized")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# Helper Functions
+# =============================================================================
+
+
 async def is_admin(bot: Bot, chat_id: int, user_id: int) -> bool:
     try:
         member = await bot.get_chat_member(chat_id, user_id)
@@ -255,10 +257,11 @@ async def log_action(bot: Bot, chat_row: Chat, action: str, reason: str, actor_i
         db.add(ModLog(chat_id=chat_row.chat_id, actor_id=actor_id, target_id=target_id, action=action, reason=reason, meta=meta))
         db.commit()
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Subscription Gate ("captcha via subscription")
-# ─────────────────────────────────────────────────────────────────────────────
-# Track subscription state per user to detect unsubscribes
+# =============================================================================
+# Subscription Management
+# =============================================================================
+
+
 class SubscriptionState(Base):
     __tablename__ = "subscription_state"
     id = Column(Integer, primary_key=True)
@@ -334,27 +337,35 @@ async def periodic_subscription_check():
                 
                 db.commit()
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Bot + Routers
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# Bot Initialization
+# =============================================================================
+
 bot = Bot(token=TOKEN, default=DefaultBotProperties())
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# /start in PM
-# ─────────────────────────────────────────────────────────────────────────────
+logging.info("✅ Bot initialized")
+
+
+# =============================================================================
+# Command Handlers
+# =============================================================================
+
 @router.message(CommandStart())
 async def cmd_start(msg: Message):
+    logging.info(f"Start command received from user {msg.from_user.id} (@{msg.from_user.username})")
     await msg.answer(
         "Привет! Я модератор-бот.\n"
         "Добавьте меня админом в ваш чат и используйте /settings в группе."
     )
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Chat member updates: greet & mark for subscription
-# ─────────────────────────────────────────────────────────────────────────────
+
+# =============================================================================
+# Event Handlers
+# =============================================================================
+
 @router.chat_member()
 async def on_member(update: ChatMemberUpdated):
     if update.chat.type not in {ChatType.GROUP, ChatType.SUPERGROUP}:
@@ -459,9 +470,11 @@ async def cb_check_sub(cb: CallbackQuery):
     else:
         await cb.answer("Не вижу подписку. Подпишитесь и попробуйте снова.", show_alert=True)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Commands visible in groups
-# ─────────────────────────────────────────────────────────────────────────────
+
+# =============================================================================
+# User Commands
+# =============================================================================
+
 HELP_TEXT = (
     "Доступные команды:\n"
     "!help — команды\n"
@@ -616,9 +629,11 @@ async def cmd_logs(msg: Message):
             except Exception:
                 pass
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Admin actions: warn/kick/ban/mute/unmute
-# ─────────────────────────────────────────────────────────────────────────────
+
+# =============================================================================
+# Admin Commands
+# =============================================================================
+
 async def require_admin(msg: Message) -> Tuple[bool, Optional[Chat]]:
     ok = await is_admin(bot, msg.chat.id, msg.from_user.id)
     if not ok:
@@ -866,9 +881,11 @@ async def cmd_unmute(msg: Message):
     await log_action(bot, chat_row, "unmute", "", msg.from_user.id, target.id, {})
     await msg.reply(f"🔊 Размут {target.mention_html()}", parse_mode="HTML")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Settings commands (admins)
-# ─────────────────────────────────────────────────────────────────────────────
+
+# =============================================================================
+# Settings Commands
+# =============================================================================
+
 @router.message(Command("settings"))
 async def cmd_settings(msg: Message):
     if msg.chat.type == ChatType.PRIVATE:
@@ -933,9 +950,11 @@ async def cmd_setmutetime(msg: Message):
         db.commit()
     await msg.reply(f"✅ Время мута по умолчанию: {minutes} мин.")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Content moderation (delete with reason)
-# ─────────────────────────────────────────────────────────────────────────────
+
+# =============================================================================
+# Content Moderation
+# =============================================================================
+
 @router.message(F.text)
 async def on_text(msg: Message):
     if msg.chat.type not in {ChatType.GROUP, ChatType.SUPERGROUP}: return
@@ -1163,9 +1182,11 @@ async def on_media(msg: Message):
         except Exception: pass
         await log_action(bot, chat_row, "delete", "media_block", None, msg.from_user.id, {"type": "media"})
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Background Tasks: Auto-unmute scheduler
-# ─────────────────────────────────────────────────────────────────────────────
+
+# =============================================================================
+# Background Tasks
+# =============================================================================
+
 async def auto_unmute_scheduler():
     """Background task to automatically unmute users whose mute time has expired"""
     while True:
@@ -1242,243 +1263,36 @@ async def auto_unmute_scheduler():
             if expired_mutes:
                 db.commit()
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Runner
-# ─────────────────────────────────────────────────────────────────────────────
+
+# =============================================================================
+# Main Entry Point
+# =============================================================================
+
 async def main():
+    """Main bot runner"""
+    logging.info("🚀 Starting bot...")
+    
     # Start background tasks
     asyncio.create_task(auto_unmute_scheduler())
     asyncio.create_task(periodic_subscription_check())
+    logging.info("✅ Background tasks started")
     
-    # Ensure no webhook is set; avoid getUpdates conflicts
+    # Clear any existing webhooks
     await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot, allowed_updates=["message","chat_member","callback_query"])  # switch to webhooks in prod
+    logging.info("✅ Webhooks cleared")
+    
+    # Start polling
+    logging.info("🔄 Starting polling...")
+    await dp.start_polling(
+        bot,
+        allowed_updates=["message", "chat_member", "callback_query"]
+    )
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Docker deployment (Dockerfile, docker-compose.yml, .env)
-# ─────────────────────────────────────────────────────────────────────────────
-# Create three files alongside this script:
-#
-# 1. Dockerfile:
-# --------------
-# syntax=docker/dockerfile:1
-# FROM python:3.11-slim
-# WORKDIR /app
-# ENV PYTHONDONTWRITEBYTECODE=1 \
-#     PYTHONUNBUFFERED=1
-# RUN apt-get update && apt-get install -y build-essential libpq-dev && rm -rf /var/lib/apt/lists/*
-# COPY requirements.txt ./
-# RUN pip install --no-cache-dir -r requirements.txt
-# COPY . .
-# CMD ["python", "ujexbot.py"]
-#
-# 2. requirements.txt:
-# --------------------
-# aiogram==3.13.1
-# SQLAlchemy==2.0.36
-# psycopg2-binary==2.9.9
-# redis==5.0.8
-# aiohttp==3.9.1
-#
-# 3. docker-compose.yml:
-# ----------------------
-# version: "3.9"
-# services:
-#   postgres:
-#     image: postgres:16-alpine
-#     environment:
-#       POSTGRES_USER: modbot
-#       POSTGRES_PASSWORD: modbot
-#       POSTGRES_DB: modbot
-#     volumes:
-#       - pgdata:/var/lib/postgresql/data
-#     ports:
-#       - "5432:5432"
-#
-#   redis:
-#     image: redis:7-alpine
-#     ports:
-#       - "6379:6379"
-#
-#   bot:
-#     build: .
-#     env_file: .env
-#     depends_on:
-#       - postgres
-#       - redis
-#     restart: unless-stopped
-#
-# volumes:
-#   pgdata:
-#
-# Run:
-#   docker compose up -d --build
-# Logs:
-#   docker compose logs -f bot
-
-# ─────────────────────────────────────────────────────────────────────────────
-# PRODUCTION SETUP (webhooks, TLS, Caddy, compose.prod, reminders)
-# ─────────────────────────────────────────────────────────────────────────────
-# This section adds a production-ready deployment using webhooks behind Caddy with Let's Encrypt.
-# It also enables expiry reminders and basic health checks.
-
-# 1) Project structure (recommended split)
-# ---------------------------------------
-# .
-# ├─ bot.py                # main entry (kept for canvas; you may split later)
-# ├─ requirements.txt
-# ├─ Dockerfile            # dev/prod base image
-# ├─ docker-compose.yml    # dev (polling)
-# ├─ docker-compose.prod.yml
-# ├─ Caddyfile
-# ├─ .env                  # dev env
-# ├─ .env.prod             # prod env (DO NOT COMMIT)
-# └─ (optional) src/handlers, src/services, src/db, src/config
-
-# 2) Webhook-enabled runner (add to bot.py beneath current polling main)
-# ---------------------------------------------------------------------
-# You can keep both modes and switch by MODE env: MODE=webhook or MODE=polling
-
-import os as _os
-from aiohttp import web as _web
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler as _SimpleRequestHandler, setup_application as _setup_application
-
-PUBLIC_URL = _os.getenv("PUBLIC_URL", "")  # e.g. https://bot.example.com
-WEBHOOK_PATH = _os.getenv("WEBHOOK_PATH", f"/webhook/{TOKEN}")
-WEBHOOK_SECRET = _os.getenv("WEBHOOK_SECRET", "")
-PORT = int(_os.getenv("PORT", "8080"))
-MODE = _os.getenv("MODE", "polling")  # polling | webhook
-
-async def on_startup_webhook(app: _web.Application):
-    # set webhook on startup
-    url = PUBLIC_URL.rstrip("/") + WEBHOOK_PATH
-    await bot.set_webhook(url=url, secret_token=WEBHOOK_SECRET)
-
-async def on_shutdown_webhook(app: _web.Application):
     try:
-        await bot.delete_webhook(drop_pending_updates=False)
-    except Exception:
-        pass
-
-async def main_webhook():
-    # Start background tasks
-    asyncio.create_task(auto_unmute_scheduler())
-    asyncio.create_task(periodic_subscription_check())
-    
-    app = _web.Application()
-    _SimpleRequestHandler(dispatcher=dp, bot=bot, secret_token=WEBHOOK_SECRET).register(app, path=WEBHOOK_PATH)
-    _setup_application(app, dp, bot=bot)
-    app.on_startup.append(on_startup_webhook)
-    app.on_shutdown.append(on_shutdown_webhook)
-    # health endpoint
-    async def health(_): return _web.json_response({"ok": True, "ts": datetime.utcnow().isoformat()})
-    app.router.add_get("/healthz", health)
-    runner = _web.AppRunner(app)
-    await runner.setup()
-    site = _web.TCPSite(runner, host="0.0.0.0", port=PORT)
-    await site.start()
-    while True:
-        await asyncio.sleep(3600)
-
-# Replace previous __main__ section with the switcher:
-# if __name__ == "__main__":
-#     if MODE == "webhook" and PUBLIC_URL:
-#         asyncio.run(main_webhook())
-#     else:
-#         asyncio.run(main())
-
-# 3) Caddyfile (reverse proxy + automatic TLS)
-# --------------------------------------------
-# Use a real domain that points to your server public IP. Ensure ports 80 and 443 open.
-# File: ./Caddyfile
-#
-# {your_domain}
-#     encode zstd gzip
-#     tls {your_email@example.com}
-#     @webhook path /webhook/*
-#     handle @webhook {
-#         reverse_proxy bot:8080
-#     }
-#     handle_path /healthz* {
-#         reverse_proxy bot:8080
-#     }
-#     # default: show simple 200 page
-#     respond "OK" 200
-
-# 4) docker-compose.prod.yml
-# --------------------------
-# File: ./docker-compose.prod.yml
-#
-# version: "3.9"
-# services:
-#   postgres:
-#     image: postgres:16-alpine
-#     environment:
-#       POSTGRES_USER: modbot
-#       POSTGRES_PASSWORD: modbot
-#       POSTGRES_DB: modbot
-#     volumes:
-#       - pgdata:/var/lib/postgresql/data
-#     restart: unless-stopped
-#
-#   redis:
-#     image: redis:7-alpine
-#     restart: unless-stopped
-#
-#   bot:
-#     build: .
-#     env_file: .env.prod
-#     depends_on:
-#       - postgres
-#       - redis
-#     environment:
-#       MODE: webhook
-#       PORT: 8080
-#     expose:
-#       - "8080"
-#     restart: unless-stopped
-#
-#   caddy:
-#     image: caddy:2-alpine
-#     ports:
-#       - "80:80"
-#       - "443:443"
-#     volumes:
-#       - ./Caddyfile:/etc/caddy/Caddyfile
-#       - caddydata:/data
-#       - caddyconfig:/config
-#     depends_on:
-#       - bot
-#     restart: unless-stopped
-#
-# volumes:
-#   pgdata:
-#   caddydata:
-#   caddyconfig:
-
-# 5) .env.prod (example)
-# ----------------------
-# BOT_TOKEN=123456:ABC...
-# DATABASE_URL=postgresql+psycopg2://modbot:modbot@postgres:5432/modbot
-# REDIS_URL=redis://redis:6379/0
-# PUBLIC_URL=https://your-domain.tld
-# WEBHOOK_PATH=/webhook/secret-path
-# WEBHOOK_SECRET=super-secret-token
-# DEFAULT_PLAN=basic
-
-# 6) Production run commands
-# --------------------------
-# docker compose -f docker-compose.prod.yml up -d --build
-# docker compose -f docker-compose.prod.yml logs -f bot
-# curl -k https://your-domain.tld/healthz  # should return {"ok": true}
-
-# - Pin library versions, audit dependencies on updates.
-
-# 9) Zero-downtime deploy hint
-# ----------------------------
-# - Use rolling update: build new image, docker compose pull/up, Caddy keeps connections.
-# - If you later separate services, place a message queue (e.g., Redis streams/RabbitMQ) for heavy tasks.
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("👋 Bot stopped by user")
+    except Exception as e:
+        logging.error(f"❌ Fatal error: {e}")
