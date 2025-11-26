@@ -30,6 +30,8 @@ import asyncio
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
 
+from aiohttp import web
+from aiohttp_cors import setup as cors_setup, ResourceOptions
 from aiogram import Bot, Dispatcher, F, Router # type: ignore
 from aiogram.enums import ChatMemberStatus, ChatType
 from aiogram.filters import CommandStart, Command
@@ -54,6 +56,12 @@ if not TOKEN:
     raise SystemExit("❌ BOT_TOKEN environment variable is required")
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///bot.db")
+
+# Webhook configuration
+MODE = os.getenv("MODE", "polling")  # polling or webhook
+PUBLIC_URL = os.getenv("PUBLIC_URL", "")
+WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", f"/webhook/{TOKEN}")
+PORT = int(os.getenv("PORT", "8080"))
 
 # Content filters
 PROFANITY = {"сука", "блять", "нахуй", "хуй", "пизда", "ебать"}
@@ -1277,16 +1285,86 @@ async def main():
     asyncio.create_task(periodic_subscription_check())
     logging.info("✅ Background tasks started")
     
-    # Clear any existing webhooks
-    await bot.delete_webhook(drop_pending_updates=True)
-    logging.info("✅ Webhooks cleared")
-    
-    # Start polling
-    logging.info("🔄 Starting polling...")
-    await dp.start_polling(
-        bot,
-        allowed_updates=["message", "chat_member", "callback_query"]
-    )
+    if MODE == "webhook" and PUBLIC_URL:
+        logging.info("🌐 Starting in WEBHOOK mode...")
+        
+        # Setup webhook
+        webhook_url = PUBLIC_URL.rstrip("/") + WEBHOOK_PATH
+        await bot.set_webhook(url=webhook_url)
+        logging.info(f"✅ Webhook set to: {webhook_url}")
+        
+        # Create web app
+        app = web.Application()
+        
+        # Setup CORS
+        cors = cors_setup(app, defaults={
+            "*": ResourceOptions(
+                allow_credentials=True,
+                expose_headers="*",
+                allow_headers="*",
+                allow_methods="*"
+            )
+        })
+        
+        # Health check endpoint
+        async def healthz(request):
+            return web.json_response({"status": "ok", "mode": "webhook"})
+        
+        # Submit endpoint - receives data from website
+        async def submit(request):
+            try:
+                data = await request.json()
+                logging.info(f"📥 Received submission: {data}")
+                
+                # TODO: Process the data (send to Telegram, save to DB, etc.)
+                # Example: Send to a specific chat
+                # await bot.send_message(chat_id=YOUR_CHAT_ID, text=f"New submission: {data}")
+                
+                return web.json_response({
+                    "success": True,
+                    "message": "Data received",
+                    "data": data
+                })
+            except Exception as e:
+                logging.error(f"❌ Submit error: {e}")
+                return web.json_response({
+                    "success": False,
+                    "error": str(e)
+                }, status=400)
+        
+        # Add CORS to endpoints
+        health_route = app.router.add_get("/healthz", healthz)
+        submit_route = app.router.add_post("/api/booking/submit'", submit)
+        cors.add(health_route)
+        cors.add(submit_route)
+        
+        # Webhook endpoint for Telegram updates
+        from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+        SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
+        setup_application(app, dp, bot=bot)
+        
+        # Start web server
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, host="0.0.0.0", port=PORT)
+        await site.start()
+        logging.info(f"✅ Web server started on port {PORT} with CORS enabled")
+        
+        # Keep running
+        while True:
+            await asyncio.sleep(3600)
+    else:
+        logging.info("🔄 Starting in POLLING mode...")
+        
+        # Clear any existing webhooks
+        await bot.delete_webhook(drop_pending_updates=True)
+        logging.info("✅ Webhooks cleared")
+        
+        # Start polling
+        await dp.start_polling(
+            bot,
+            allowed_updates=["message", "chat_member", "callback_query"]
+        )
 
 
 if __name__ == "__main__":
