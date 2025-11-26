@@ -63,6 +63,9 @@ PUBLIC_URL = os.getenv("PUBLIC_URL", "")
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", f"/webhook/{TOKEN}")
 PORT = int(os.getenv("PORT", "8080"))
 
+# Telegram notification settings
+BOOKING_CHAT_ID = os.getenv("BOOKING_CHAT_ID", "")  # Chat/channel to send booking notifications
+
 # Content filters
 PROFANITY = {"сука", "блять", "нахуй", "хуй", "пизда", "ебать"}
 LINK_RE = re.compile(r"https?://|t\.me/|\bwww\.", re.IGNORECASE)
@@ -364,10 +367,12 @@ logging.info("✅ Bot initialized")
 @router.message(CommandStart())
 async def cmd_start(msg: Message):
     logging.info(f"Start command received from user {msg.from_user.id} (@{msg.from_user.username})")
+    logging.info(f"Message: {msg.chat.id}")
     await msg.answer(
         "Привет! Я модератор-бот.\n"
         "Добавьте меня админом в ваш чат и используйте /settings в группе."
     )
+
 
 
 # =============================================================================
@@ -1285,7 +1290,7 @@ async def main():
     asyncio.create_task(periodic_subscription_check())
     logging.info("✅ Background tasks started")
     
-    if MODE == "webhook" and PUBLIC_URL:
+    if MODE == "webhook" and PUBLIC_URL and PUBLIC_URL.startswith("https"):
         logging.info("🌐 Starting in WEBHOOK mode...")
         
         # Setup webhook
@@ -1310,23 +1315,57 @@ async def main():
         async def healthz(request):
             return web.json_response({"status": "ok", "mode": "webhook"})
         
-        # Submit endpoint - receives data from website
-        async def submit(request):
+        # Booking submission endpoint - receives data from website
+        async def booking_submit(request):
             try:
                 data = await request.json()
-                logging.info(f"📥 Received submission: {data}")
+                logging.info(f"📥 Received booking submission: {data}")
                 
-                # TODO: Process the data (send to Telegram, save to DB, etc.)
-                # Example: Send to a specific chat
-                # await bot.send_message(chat_id=YOUR_CHAT_ID, text=f"New submission: {data}")
+                # Format booking message for Telegram
+                message = "🆕 <b>New Booking Request</b>\n\n"
+                
+                if "name" in data:
+                    message += f"👤 Name: {data['name']}\n"
+                if "email" in data:
+                    message += f"📧 Email: {data['email']}\n"
+                if "phone" in data:
+                    message += f"📱 Phone: {data['phone']}\n"
+                if "date" in data:
+                    message += f"📅 Date: {data['date']}\n"
+                if "time" in data:
+                    message += f"🕐 Time: {data['time']}\n"
+                if "service" in data:
+                    message += f"💼 Service: {data['service']}\n"
+                if "message" in data:
+                    message += f"\n💬 Message:\n{data['message']}\n"
+                
+                message += f"\n⏰ Received: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
+                
+                # Send to Telegram
+                if BOOKING_CHAT_ID:
+                    try:
+                        await bot.send_message(
+                            chat_id=BOOKING_CHAT_ID,
+                            text=message,
+                            parse_mode="HTML"
+                        )
+                        logging.info(f"✅ Booking sent to Telegram chat {BOOKING_CHAT_ID}")
+                    except Exception as e:
+                        logging.error(f"❌ Failed to send to Telegram: {e}")
+                        return web.json_response({
+                            "success": False,
+                            "error": "Failed to send to Telegram"
+                        }, status=500)
+                else:
+                    logging.warning("⚠️ BOOKING_CHAT_ID not configured")
                 
                 return web.json_response({
                     "success": True,
-                    "message": "Data received",
+                    "message": "Booking received and sent to Telegram",
                     "data": data
                 })
             except Exception as e:
-                logging.error(f"❌ Submit error: {e}")
+                logging.error(f"❌ Booking submit error: {e}")
                 return web.json_response({
                     "success": False,
                     "error": str(e)
@@ -1334,9 +1373,9 @@ async def main():
         
         # Add CORS to endpoints
         health_route = app.router.add_get("/healthz", healthz)
-        submit_route = app.router.add_post("/api/booking/submit'", submit)
+        booking_route = app.router.add_post("/api/booking/submit", booking_submit)
         cors.add(health_route)
-        cors.add(submit_route)
+        cors.add(booking_route)
         
         # Webhook endpoint for Telegram updates
         from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
@@ -1354,11 +1393,100 @@ async def main():
         while True:
             await asyncio.sleep(3600)
     else:
+        # POLLING mode with optional HTTP server for booking API
         logging.info("🔄 Starting in POLLING mode...")
         
         # Clear any existing webhooks
         await bot.delete_webhook(drop_pending_updates=True)
         logging.info("✅ Webhooks cleared")
+        
+        # Check if we should start HTTP server for booking endpoint
+        if PORT and BOOKING_CHAT_ID:
+            logging.info("🌐 Starting HTTP server for booking API...")
+            
+            # Create web app
+            app = web.Application()
+            
+            # Setup CORS
+            cors = cors_setup(app, defaults={
+                "*": ResourceOptions(
+                    allow_credentials=True,
+                    expose_headers="*",
+                    allow_headers="*",
+                    allow_methods="*"
+                )
+            })
+            
+            # Health check endpoint
+            async def healthz(request):
+                return web.json_response({"status": "ok", "mode": "polling"})
+            
+            # Booking submission endpoint
+            async def booking_submit(request):
+                try:
+                    data = await request.json()
+                    logging.info(f"📥 Received booking submission: {data}")
+                    
+                    # Format booking message for Telegram
+                    message = "🆕 <b>New Booking Request</b>\n\n"
+                    
+                    if "name" in data:
+                        message += f"👤 Name: {data['name']}\n"
+                    if "email" in data:
+                        message += f"📧 Email: {data['email']}\n"
+                    if "phone" in data:
+                        message += f"📱 Phone: {data['phone']}\n"
+                    if "date" in data:
+                        message += f"📅 Date: {data['date']}\n"
+                    if "time" in data:
+                        message += f"🕐 Time: {data['time']}\n"
+                    if "service" in data:
+                        message += f"💼 Service: {data['service']}\n"
+                    if "message" in data:
+                        message += f"\n💬 Message:\n{data['message']}\n"
+                    
+                    message += f"\n⏰ Received: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
+                    
+                    # Send to Telegram
+                    if BOOKING_CHAT_ID:
+                        try:
+                            await bot.send_message(
+                                chat_id=BOOKING_CHAT_ID,
+                                text=message,
+                                parse_mode="HTML"
+                            )
+                            logging.info(f"✅ Booking sent to Telegram chat {BOOKING_CHAT_ID}")
+                        except Exception as e:
+                            logging.error(f"❌ Failed to send to Telegram: {e}")
+                            return web.json_response({
+                                "success": False,
+                                "error": "Failed to send to Telegram"
+                            }, status=500)
+                    
+                    return web.json_response({
+                        "success": True,
+                        "message": "Booking received and sent to Telegram",
+                        "data": data
+                    })
+                except Exception as e:
+                    logging.error(f"❌ Booking submit error: {e}")
+                    return web.json_response({
+                        "success": False,
+                        "error": str(e)
+                    }, status=400)
+            
+            # Add CORS to endpoints
+            health_route = app.router.add_get("/healthz", healthz)
+            booking_route = app.router.add_post("/api/booking/submit", booking_submit)
+            cors.add(health_route)
+            cors.add(booking_route)
+            
+            # Start web server
+            runner = web.AppRunner(app)
+            await runner.setup()
+            site = web.TCPSite(runner, host="0.0.0.0", port=PORT)
+            await site.start()
+            logging.info(f"✅ HTTP server started on port {PORT} with CORS enabled")
         
         # Start polling
         await dp.start_polling(

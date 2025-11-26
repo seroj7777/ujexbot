@@ -13,8 +13,8 @@ api.spytech.am {
         reverse_proxy bot:8080
     }
     
-    # Submit endpoint - receives requests from spytech.am
-    handle_path /submit* {
+    # Booking submission endpoint - receives requests from spytech.am
+    handle_path /api/booking/* {
         reverse_proxy bot:8080
     }
     
