@@ -1435,20 +1435,22 @@ async def main():
                     # Format booking message for Telegram
                     message = "🆕 <b>New Booking Request</b>\n\n"
                     
-                    if "name" in data:
-                        message += f"👤 Name: {data['name']}\n"
+                    if "fullName" in data:
+                        message += f"👤 Name: {data['fullName']}\n"
                     if "email" in data:
                         message += f"📧 Email: {data['email']}\n"
-                    if "phone" in data:
+                    if "phoneNumber" in data:
                         message += f"📱 Phone: {data['phone']}\n"
-                    if "date" in data:
-                        message += f"📅 Date: {data['date']}\n"
+                    if "rentalStartDate" in data:
+                        message += f"📅 Start Date: {data['rentalStartDate']}\n"
+                    if "rentalEndDate" in data:
+                        message += f"📅 End Date: {data['rentalEndDate']}\n"
                     if "time" in data:
                         message += f"🕐 Time: {data['time']}\n"
-                    if "service" in data:
-                        message += f"💼 Service: {data['service']}\n"
-                    if "message" in data:
-                        message += f"\n💬 Message:\n{data['message']}\n"
+                    if "selectedRentItem" in data:
+                        message += f"💼 Rent Service: {data['selectedRentItem']}\n"
+                    elif "selectedSaleItem" in data:
+                        message += f"💼 Sale Service: {data['selectedSaleItem']}\n"
                     
                     message += f"\n⏰ Received: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
                     
