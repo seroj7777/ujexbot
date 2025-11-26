@@ -1329,7 +1329,7 @@ async def main():
                 if "email" in data:
                     message += f"📧 Email: {data['email']}\n"
                 if "phoneNumber" in data:
-                    message += f"📱 Phone: {data['phone']}\n"
+                    message += f"📱 Phone: {data['phoneNumber']}\n"
                 if "rentalStartDate" in data:
                     message += f"📅 Start Date: {data['rentalStartDate']}\n"
                 if "rentalEndDate" in data:
@@ -1434,13 +1434,13 @@ async def main():
                     
                     # Format booking message for Telegram
                     message = "🆕 <b>New Booking Request</b>\n\n"
-                    
+
                     if "fullName" in data:
                         message += f"👤 Name: {data['fullName']}\n"
                     if "email" in data:
                         message += f"📧 Email: {data['email']}\n"
                     if "phoneNumber" in data:
-                        message += f"📱 Phone: {data['phone']}\n"
+                        message += f"📱 Phone: {data['phoneNumber']}\n"
                     if "rentalStartDate" in data:
                         message += f"📅 Start Date: {data['rentalStartDate']}\n"
                     if "rentalEndDate" in data:
