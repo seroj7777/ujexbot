@@ -1,9 +1,8 @@
-# Replace {your_domain} with your actual domain
-{your_domain} {
+# Caddy configuration for api.spytech.am (webhook server)
+api.spytech.am {
     encode zstd gzip
-    tls {your_email@example.com}
     
-    # Webhook endpoint
+    # Webhook endpoint for Telegram
     @webhook path /webhook/*
     handle @webhook {
         reverse_proxy bot:8080
@@ -11,6 +10,11 @@
     
     # Health check endpoint
     handle_path /healthz* {
+        reverse_proxy bot:8080
+    }
+    
+    # Submit endpoint - receives requests from spytech.am
+    handle_path /submit* {
         reverse_proxy bot:8080
     }
     
