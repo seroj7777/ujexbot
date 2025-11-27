@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
 """
 Telegram Moderator Bot
->>>>>>> a0d8b10c2ac322bbaeb109f8c3d616bfe4f21b9a
 
-<<<<<<< HEAD
-=======
 Features:
 - Subscription gate (captcha via channel subscription)
 - Content filters (profanity, links, mentions)
@@ -20,7 +17,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
->>>>>>> a0d8b10c2ac322bbaeb109f8c3d616bfe4f21b9a
 import os
 from dotenv import load_dotenv
 
@@ -1505,27 +1501,8 @@ async def main():
             allowed_updates=["message", "chat_member", "callback_query"]
         )
 
-<<<<<<< HEAD
-import os as _os
-from aiohttp import web as _web
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler as _SimpleRequestHandler, setup_application as _setup_application
-
-PUBLIC_URL = _os.getenv("PUBLIC_URL", "")  # e.g. https://bot.example.com
-WEBHOOK_PATH = _os.getenv("WEBHOOK_PATH", f"/webhook/{TOKEN}")
-WEBHOOK_SECRET = _os.getenv("WEBHOOK_SECRET", "")
-PORT = int(_os.getenv("PORT", "8080"))
-MODE = _os.getenv("MODE", "polling")  # polling | webhook
-
-async def on_startup_webhook(app: _web.Application):
-    # set webhook on startup
-    url = PUBLIC_URL.rstrip("/") + WEBHOOK_PATH
-    await bot.set_webhook(url=url, secret_token=WEBHOOK_SECRET)
-
-async def on_shutdown_webhook(app: _web.Application):
-=======
 
 if __name__ == "__main__":
->>>>>>> a0d8b10c2ac322bbaeb109f8c3d616bfe4f21b9a
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
